@@ -60,3 +60,27 @@ lookup_reagent_spec = {
         },
     },
 }
+
+reagents = lookup_reagent
+
+reagents_spec = {
+    "type": "function",
+    "function": {
+        "name": "reagents",
+        "description": (
+            "Look up a reagent, labware item, or pipette in the local catalog "
+            "and return its metadata (vendor, notes) if present. Returns null "
+            "if the item is not in the catalog  -  do not invent data when null."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Reagent / labware name to search for (substring match).",
+                },
+            },
+            "required": ["name"],
+        },
+    },
+}

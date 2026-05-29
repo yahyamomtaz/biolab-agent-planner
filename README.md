@@ -1,84 +1,183 @@
-# biolab-agent-base
+# biolab-agent
 
-Starter environment for an **autonomous laboratory agent**. Given a
-natural-language request, the agent segments microplate images, retrieves
-SOPs from a local protocol corpus, looks up reagents, and produces a
-structured protocol, optionally polished with a LoRA-fine-tuned model.
+This repository is a development of [prakash-aryan/biolab-agent-base](biolab-agent-base). 
+**Final score: 15/15 passes · 0.92 overall** (baseline: 10/15 · 0.68)
 
-The repository ships the Docker stack, datasets, fine-tuning data, an
-evaluation harness, and an abstract `BaseAgent` contract. A working
-`BaselineAgent` is included as a reference implementation. It scores
-**11/15 / 0.71** on the public benchmark; failure modes are left in
-place as room for someone to improve on.
+#### A video of running both agent via gradio is available here:
 
-![Architecture](docs/architecture.png)
+- https://www.youtube.com/watch?v=83FldTK8rKI
 
-![Gradio demo](docs/gradio_demo.gif)
 
----
+
+## What have been changed:
+
+
+The baseline fails 5 queries that each point to a different layer of the stack. Following modifications added to the repository:
+
+- **New Agent:** `PlannerAgent` — five-component LLMCompiler (Planner → TaskFetcher → Executor → Joiner → Renderer) replacing the baseline's 10-turn agent. System prompt split into nested single-responsibility prompts with schema-constrained decoding per component.
+
+- **RAG:** Dense retrieval (BGE-small + Qdrant) extended with BM25 + RRF merge and a BAAI/bge-reranker-base cross-encoder reranker.
+A **Data cleaning** (`_clean_doc_text()`) added to remove noisy Markdown `Links` navigation blocks and `<br>` tags before reranking, preventing the protocol from confusing the cross-encoder.Lastly, added `data/reagents/abbrev_map.json` to handle abbreviations in catalog tasks and replace them with full names when needed.The dataset comes from the paper: [A deep database of medical abbreviations and acronyms for natural language processing](https://www.nature.com/articles/s41597-021-00929-4).
+- **Pydantic validation:** planner outputs, renderer replies, tool traces, and catalog answers are validated before they are trusted, so malformed JSON or invented fields are rejected early.
+
+- **Tool-call discipline:** Scoped absence validation and best-match catalog lookup to prevent hallucinations on T10 and T12.
+
+- **Gradio UI:** Side-by-side comparison tab running `BaselineAgent` and `PlannerAgent` in parallel on the same query.
+
+- **Tasks Fixed:** T7 - T10 - T12 - T13 - T15
+
+## Implementations:
+
+### 1. The new Agent architecture (Planner/Executer Agent)
+
+The agent follows the four-component decomposition from [An LLM Compiler for Parallel Function Calling (Kim et al. 2024, arXiv:2312.04511)](https://arxiv.org/pdf/2312.04511): an LLM **Planner** emits a set of tasks with `$N` cross-step variable references, a **Task Fetching Unit** follows those references and decides when each task is ready, an **Executor** dispatches ready tasks in parallel, a **Joiner** validate the Executor's output and either finalizes or asks the Planner for a new Plan, and a **Renderer** turns the accepted observations into the answer.
+
+<img src="docs/planner-agent-architecture.png">
+
+The baseline is a single 10-turn loop where MedGemma-4B chooses every next step, including whether to stop. PlannerAgent replaces that with five components.
+
+**Component map (file-by-file):**
+
+```
+src/biolab_agent/agent/
+├── planner.py          Composition root; wires all components, manages VRAM eviction.
+│
+└── compiler/
+    ├── __init__.py     Package facade with LLMCompiler component diagram.
+    ├── types.py        Pydantic contracts: Plan, PlanStep, ToolName, TaskKind, RenderedAnswer.
+    ├── config.py       PlannerConfig: step/citation/parallelism limits, temperatures.
+    ├── tool_registry.py  Single point of tool dispatch.
+    ├── llm_session.py  Retry-loop helper; validates JSON against schema, re-prompts on failure.
+    ├── plan.py         LLM Planner; one temp-0.0 call → typed Plan. No tool calls, no prose.
+    ├── fetcher.py      Task Fetching Unit; resolves $N variable references, handles fan-out. No LLM.
+    ├── executor.py     Parallel tool runner; ThreadPoolExecutor capped by max_parallel_calls.
+    ├── joiner.py       Deterministic finalise-or-replan predicate over ExecutionResult.
+    └── renderers.py    One LLM call per task_kind (catalog, cell_count, retrieval, design, composite).
+```
+
+
+**Why not ReAct?** MedGemma 4B lacks the capacity, instruction compliance, and architecture needed for complex agent loops. Therefore, a Planner/Executor agent is more suitable.
+
+### Prompt engineering
+
+The baseline uses **one monolithic system prompt** that asks MedGemma-4B to plan, call tools, and write the final answer, all in the same loop. PlannerAgent replaces this with nested prompts, each with a single job.
+
+All renderers use schema-constrained decoding (`format=<Pydantic schema>`) for the flat output schemas. The planner uses plain JSON mode with a post-validate retry because the nested `Plan` schema is too complex for Ollama's constrained decoder on a 4B model.
+
+The baseline on T10 and T12 hallucinated because the same prompt was responsible for both deciding what facts to use and writing the answer. Separating those two jobs prevents the model hallucination.
 
 ## How it works
 
-Every query passes through the same loop:
+Every query passes through five deterministic stages:
 
-1. **User input.** A natural-language request, optionally with a list of
-   image IDs from `data/images/`. Submitted via `POST /ask`,
-   `biolab-bench`, or the Gradio UI.
-2. **Agent loop.** `BaselineAgent` (in `src/biolab_agent/agent/baseline.py`)
-   runs up to 10 turns. Each turn it sends the full conversation to
-   **MedGemma-4B** (Ollama) and forces a single JSON object as the reply:
-   either a tool call (`{"tool": ..., "arguments": ...}`) or a final
-   answer (`{"final": ..., "structured": ..., "citations": [...]}`).
-3. **Tool dispatch.** The loop parses the JSON, runs the tool, and feeds
-   the result back to the LLM as a `role: "tool"` message. Tools
-   available to the agent:
-   - `segment_wells(image_id, prompt)` runs SAM mask-generation and
-     returns per-cell masks, count, and confluency.
-   - `retrieve_protocol(query, k)` embeds with BGE and queries Qdrant
-     over 200 OpenTrons protocols; returns top-k chunks with `doc_id`
-     and `chunk_id`.
-   - `lookup_reagent(name)` does a CSV substring search against
-     `data/reagents/catalog.csv`.
-   - `compose_protocol(...)` Pydantic-validates a structured protocol
-     definition.
-4. **Auto-aggregation.** Python collects trustworthy outputs (per-well
-   counts, retrieved doc IDs) into the final result so the LLM cannot
-   silently hallucinate over them.
-5. **Adapter polish (protocol-design only).** If the query mentions
-   "design / draft / compose / structured protocol", the agent unloads
-   Ollama's MedGemma, loads the fine-tuned LoRA adapter via Hugging Face
-   transformers, runs one inference pass to refine the structured
-   protocol, then frees the GPU.
-6. **`AgentResult`.** Natural-language answer plus structured payload,
-   tool trace, and citations. Consumed by the FastAPI service, the
-   harness, or the Gradio UI.
+1. **User input.** A natural-language request, optionally with a list of image IDs from `data/images/`. Submitted via `POST /ask`, `biolab-bench`, or the Gradio UI.
 
-To plug in a different agent, set `BIOLAB_AGENT_CLASS` to your
-`BaseAgent` subclass. The tools, data, and harness stay identical; the
-score that comes out the other side is the comparison.
+2. **Planner.** `plan.py` sends the query to MedGemma-4B (Ollama) at temperature 0.0 with a single-responsibility system prompt and forces the reply to be a JSON `Plan`: a `task_kind` (`cell_count | retrieval | design | catalog | composite | other`), an ordered list of `PlanStep` objects with `depends_on` edges and an optional `foreach_image_id` flag, and a `success_criteria` string. Pydantic validates the output; if the JSON is malformed the session retries up to `max_retries` times before returning `None`. No tool calls and no prose are produced here — the model's only job is the plan.
 
-### What "agentic" means here
+3. **Task Fetching Unit → Executor.** `fetcher.py` walks the plan DAG, substitutes `${steps[N].observation.path}` variable references once their producing steps have resolved, and expands `foreach_image_id` fan-outs into one `ReadyTask` per image. The `Executor` (`executor.py`) receives the ready set and dispatches them in parallel using `ThreadPoolExecutor` (capped by `max_parallel_calls`), then absorbs all observations into a typed `ExecutionResult` bag. Tools available:
+   - `segment_wells(image_id, prompt)` — SAM mask-generation returning per-cell masks, count, and confluency.
+   - `retrieve_protocol(query, k)` — hybrid BM25 + dense (BGE-small + Qdrant) retrieval with RRF merge and a `BAAI/bge-reranker-base` cross-encoder; returns top-k `ProtocolHit` objects.
+   - `lookup_reagent(name)` — abbreviation-expanded CSV search against `data/reagents/catalog.csv`, returns an explicit `{found, name, record}` observation.
+   - `compose_protocol(...)` — Pydantic-validates a structured protocol definition.
 
-The LLM picks each next step based on what the previous tool returned.
-No Python `if/else` choreographs the flow. For example, the composite
-task *"row D, if max count > 100 retrieve a PCR protocol"* runs as:
+4. **Joiner.** `joiner.py` inspects the `ExecutionResult` with a deterministic predicate — no LLM call. If the expected evidence is present (`cell_counts` for counting tasks, `citations` for retrieval, `composed` for design, etc.) it emits `finalize`. Otherwise it builds a concrete failure message and emits `replan`, which feeds back into the Planner for another round (capped by `max_replans`).
+
+5. **Renderer.** `renderers.py` picks the renderer keyed on `Plan.task_kind` and makes one LLM call under schema-constrained decoding (`format=<Pydantic schema>`) to turn the `ExecutionResult` into a user-facing answer. Catalog renderers additionally run `_catalog_consistency_error()`, which rejects any reply whose declared metadata (CAS, vendor, SKU, …) does not match the tool observation byte-for-byte, then re-prompts up to 2 times.
+
+6. **Post-render merge.** Measured values always beat LLM prose: `cell_counts` and `confluency` from `segment_wells` overwrite any renderer estimate; `compose_protocol` output is the source of truth for design tasks. Citations from tool calls are prepended to any renderer citations, with deduplication.
+
+7. **`AgentResult`.** Natural-language answer plus structured payload, tool trace, citations, and timing. Consumed by the FastAPI service, the harness, or the Gradio UI.
+
+### What the agentic flow looks like
+
+For the composite task *"retrieve a PCR protocol, then compose an adapted version"* (T15):
 
 ```
-LLM → segment_wells D01 → 17 cells     → continue
-LLM → segment_wells D02 → 18 cells     → continue
-LLM → segment_wells D03 → 59 cells     → continue
-LLM → segment_wells D04 → 18 cells     → continue
-LLM → segment_wells D05 → 148 cells    → max > 100 → retrieve_protocol
-LLM → retrieve_protocol("PCR prep")    → 925d07-v3
-LLM → final answer + citation
+Planner → Plan { task_kind: "composite",
+                  steps: [retrieve_protocol("PCR prep"),
+                          compose_protocol(depends_on=[1])] }
+
+TaskFetcher → step 1 ready (no deps)
+Executor    → retrieve_protocol("PCR prep") → hit: 925d07-v3
+
+TaskFetcher → step 2 ready (dep resolved, args patched with hit)
+Executor    → compose_protocol(title="PCR Prep", ...) → structured protocol
+
+Joiner      → citations ✓, composed ✓ → finalize
+
+Renderer    → CompositeRenderer writes prose summary
+Post-merge  → structured["protocol"] ← composed; citation ← (925d07-v3, chunk-0)
 ```
 
-If max had been < 100, the LLM would skip retrieval and recommend
-continuing culture. Branching, batching, and refusal behaviour all live
-inside the LLM's choice of next tool, not in the harness or the tool
-implementations.
+The Planner emits the plan once and stops. Python — not the LLM — manages dependency resolution, parallel dispatch, the finalize-or-replan decision, and the final merge. The model only speaks twice per query: once as the Planner and once as the Renderer.
 
----
+**Why Planner/Executor with MedGemma 4B?** The Planner/Executor architecture shifts control flow to deterministic code. The model is tasked with a single action: emitting a JSON plan at temperature 0.0, after which it stops. Python, not the LLM, manages execution, dependency resolution, and the finalize-or-replan decision. This approach keeps the model focused on structured, single-turn output and avoids the failure modes common in agentic loops for small models.
+
+### 2. RAG: hybrid retrieval + cross-encoder reranker
+
+The baseline uses dense-only retrieval (BGE-small + Qdrant). For T7 the target document `925d07-v3` does not appear, a reranker alone cannot rescue what is not in the candidate pool.
+
+The new pipeline:
+
+```
+query → dense (BGE-small + Qdrant, top-25)
+      → BM25 (rank_bm25, title repeated ×3 for exact-title boost)
+      → RRF merge  (score = Σ 1/(60 + rank))
+      → _clean_doc_text  (strips Markdown Links: blocks and <br> tags)
+      → BAAI/bge-reranker-base cross-encoder
+      → top-k ProtocolHit results
+```
+
+`925d07-v3` and `0523c2` share the same title "PCR Prep". After BM25 brought `925d07-v3` into the pool, the cross-encoder still preferred `0523c2` because the first ~200 characters of `925d07-v3`'s chunk-0 was a `Links:` navigation block listing three unrelated protocols. `_clean_doc_text` removes that noise before the pair reaches the cross-encoder, letting it score the actual PCR content.
+
+### 3. Output validation
+
+Catalog validation has two stages. First, `lookup_reagent` expands the query through `abbrev_map.json` (e.g. "PBS" → "phosphate buffered saline") before searching `catalog.csv`, returning an explicit `{ found, name, record }` observation rather than a bare `None`. Second, `CatalogRenderer` generates a `CatalogAnswer` under constrained Ollama decoding, then `_catalog_consistency_error()` cross-checks every declared metadata field (CAS, vendor, SKU, etc.) against that observation, any value that is not present in the catalog result triggers a correction retry, up to 2 times.
+
+### 4. Tool-call discipline
+
+Rule 5 in the planner system prompt order the LLM to issue exactly one `lookup_reagent` step for catalog tasks, reinforced by a one-step JSON template. Before the Executor runs, **Pydantic** parses the raw plan JSON into typed `Plan` / `PlanStep` models: `tool` must be one of 4 exact `Literal` values (`ToolName`) and `task_kind` one of 6 (`TaskKind`). A misspelled or invented tool name is rejected at this schema-validation boundary before any tool call is dispatched.
+
+### 5. Gradio UI
+
+The Gradio UI now runs both agents in parallel and renders both answers side-by-side with a "Compare Agents" tab.
+
+<img src="docs/gardio-screenshot.png">
+
+
+## The Results
+
+On the Baseline agent 5 queries have been faild:
+- T7 (PCR retrieval): Wrong protocol ranked first
+- T10 (ethanol refusal): Phrasing missed the substring check
+- T12 (PBS quote): Didn't quote the catalog entry verbatim
+- T13 (dna_prep_design): structured output failed  
+- T15 (retrieve-then-compose): Agent skipped the second tool
+
+On the Planner agent no queries have been failed, T9 got a better result (+0.14).
+
+| Task | Kind | Baseline | PlannerAgent | Δ | Baseline pass | Planner pass |
+|---|---|:---:|:---:|:---:|:---:|:---:|
+| T1_cell_count | cell_count | 0.80 | 0.80 | — | ✅ | ✅ |
+| T2_retrieve_serial_dilution | rag_retrieval | 1.00 | 1.00 | — | ✅ | ✅ |
+| T3_structured_protocol | structured_protocol | 1.00 | 1.00 | — | ✅ | ✅ |
+| T4_reagent_lookup | answer_contains | 1.00 | 1.00 | — | ✅ | ✅ |
+| T5_composite_passage | composite | 0.70 | 0.70 | — | ✅ | ✅ |
+| T6_cell_count_row_C | cell_count | 0.60 | 0.60 | — | ✅ | ✅ |
+| T7_retrieve_pcr | rag_retrieval | 1.00(fragile) | 1.00 | — | ❌ | ✅ |
+| T8_retrieve_elisa | rag_retrieval | 1.00 | 1.00 | — | ✅ | ✅ |
+| T9_serial_dilution_design | structured_protocol | 0.86 | **1.00** | +0.14 | ✅ | ✅ |
+| T10_reagent_absence | answer_contains | 0.00 | **1.00** | +1.00 | ❌ | ✅ |
+| T11_composite_row_D | composite | 0.76 | 0.76 | — | ✅ | ✅ |
+| T12_lookup_PBS | answer_contains | 0.00 | **1.00** | +1.00 | ❌ | ✅ |
+| T13_dna_prep_design | structured_protocol | 0.00 | **1.00** | +1.00 | ❌ | ✅ |
+| T14_single_well | cell_count | 1.00 | 1.00 | — | ✅ | ✅ |
+| T15_retrieve_then_compose | tool_order | 0.50 | **1.00** | +0.50 | ❌ | ✅ |
+| **Overall** | | **0.68** | **0.92** | **+0.24** | **10/15** | **15/15** |
+
+Source reports: `artifacts/bench_report.json`
+
+
 
 ## Repository contents
 
@@ -86,19 +185,27 @@ implementations.
 |---|---|
 | `Dockerfile`, `docker-compose.yml` | Multi-stage CUDA-ready image with Ollama + Qdrant sidecars |
 | `pyproject.toml` | Pinned dependency stack (uv / pip) |
-| `src/biolab_agent/` | `BaseAgent` interface, FastAPI server, typed schemas, `BaselineAgent` reference implementation |
+| `src/biolab_agent/agent/baseline.py` | `BaselineAgent` reference implementation (10-turn ReAct loop) |
+| `src/biolab_agent/agent/planner.py` | `PlannerAgent` composition root; wires all compiler components |
+| `src/biolab_agent/agent/compiler/` | LLMCompiler components: `plan.py`, `fetcher.py`, `executor.py`, `joiner.py`, `renderers.py`, `types.py`, `config.py`, `tool_registry.py`, `llm_session.py` |
+| `src/biolab_agent/rag/` | Hybrid retrieval pipeline: BGE-small + Qdrant dense, BM25, RRF merge, `bge-reranker-base` cross-encoder |
+| `src/biolab_agent/segmentation/` | SAM mask-generation backend (`facebook/sam-vit-base`) |
+| `src/biolab_agent/tools/` | `segment_wells`, `retrieve_protocol`, `lookup_reagent`, `compose_protocol` implementations |
+| `src/biolab_agent/server.py` | FastAPI service (`/ask`, `/healthz`, `/readyz`) |
 | `eval/harness.py`, `eval/metrics.py` | 15-task benchmark runner + scoring functions |
 | `data/images/` | 20 cell-microscopy images from [BBBC002 v1](https://bbbc.broadinstitute.org/BBBC002) with published cell counts |
 | `data/protocols/opentrons.jsonl` | 200 OT-2 protocols harvested from [Opentrons/Protocols](https://github.com/Opentrons/Protocols) |
 | `data/reagents/catalog.csv` | Reagent + labware entries extracted from the protocols |
+| `data/reagents/abbrev_map.json` | Medical abbreviation → full-name map (used by `lookup_reagent` to expand queries) |
 | `data/finetune/` | 500 train / 50 eval instruction pairs derived from the protocols (for Unsloth LoRA) |
 | `data/queries_public.yaml` | 15 benchmark tasks |
+| `artifacts/lora-protocol-text/` | Fine-tuned LoRA adapter (Git LFS) for protocol-design polish |
 | `scripts/` | Bash + PowerShell scripts for setup, data fetch, model pull, benchmark |
-| `ui/app.py` | Gradio web UI showing the agent's answer + tool trace + segmentation overlays |
+| `ui/app.py` | Gradio web UI — side-by-side `BaselineAgent` vs `PlannerAgent` comparison tab |
 
 ---
 
-## Prerequisites
+## Requirements
 
 - **Docker 26+** with Compose v2 (Docker Desktop on Mac / Windows works fine).
 - **NVIDIA Container Toolkit** (Linux) or WSL2 + NVIDIA CUDA (Windows) for GPU.
@@ -116,8 +223,6 @@ The stack defaults to:
 - **Fine-tuning**: Unsloth (`pip install '.[finetune]'`)
 - **Segmentation**: `facebook/sam-vit-base` (replaceable; see below)
 
----
-
 ## Quick start
 
 The repository ships pre-fetched data (BBBC images, OpenTrons protocols,
@@ -127,21 +232,18 @@ ready to run after building the stack.
 ### 1. Clone and pull the LFS adapter
 
 ```bash
-git clone https://github.com/prakash-aryan/biolab-agent-base.git
-cd biolab-agent-base
-git lfs pull            # fetches artifacts/lora-protocol-text/*.safetensors
+git clone https://github.com/yahyamomtaz/biolab-agent-planner.git
+cd biolab-agent-planner
+git lfs pull             # fetches artifacts/lora-protocol-text/*.safetensors 
 cp .env.example .env
+docker compose build         
 ```
-
-If you forgot `git lfs install` before cloning, run it now and then
-`git lfs pull`.
 
 ### 2. Build the image
 
 ```bash
 docker compose build
 ```
-
 This is the slow step (~15 min on a fresh machine). It produces the
 `biolab-agent-base` image with PyTorch, transformers, peft,
 bitsandbytes, qdrant-client, sentence-transformers and the project
@@ -174,19 +276,18 @@ docker compose exec ollama ollama pull medgemma:4b
 docker compose exec ollama ollama pull nomic-embed-text
 ```
 
-If you used the host-Ollama override, run those `ollama pull` commands
-on the host instead of through `docker compose exec`.
-
 ### 5. Index the protocol corpus into Qdrant
 
 ```bash
 docker compose exec app biolab-index
 ```
 
-### 6. Run the benchmark
+### 6. Run the benchmark with the PlannerAgent
 
 ```bash
-docker compose exec app biolab-bench
+docker compose exec \
+  -e BIOLAB_AGENT_CLASS=biolab_agent.agent.planner:PlannerAgent \
+  app biolab-bench --report artifacts/bench_report.json
 ```
 
 When the stack is up you can also open:
@@ -207,137 +308,10 @@ bash scripts/setup.sh                            # Linux / macOS / WSL2 / Git Ba
 powershell -ExecutionPolicy Bypass -File .\scripts\setup.ps1   # Windows
 ```
 
----
 
-## Hardware notes
+## Further improvements
 
-No hard GPU requirement. Ollama serves MedGemma on CPU (Q4 quantized 4B
-needs ~3 GB RAM). Segmentation and Unsloth training are slow on CPU;
-Google Colab's free T4 is a workable fallback for the LoRA training
-run. Use the `docker-compose.cpu.yml` override (see step 3 above) to
-skip the NVIDIA runtime entirely.
+**Segmentation.** T1 (0.80) and T6 (0.60) are the largest remaining gaps. `facebook/sam-vit-base` over-counts on dense-cell wells where nuclei overlap; replacing it with [EfficientSAM3](https://github.com/SimonZeng7108/efficientsam3) or SAM2 — both tuned for instance-level separation — is a drop-in swap in `src/biolab_agent/segmentation/sam_backend.py` and the most impactful next step.
 
-On a workstation with >=12 GB VRAM, set
-`BIOLAB_HF_MODEL=unsloth/medgemma-4b-it` to skip the bnb-4bit
-quantization path during the adapter polish step.
+**Fine-tuning.** The current LoRA was trained on 500 protocol-design pairs only, so it has never seen tool-calling turns. Given more time, the dataset would be expanded with ~200 tool-call examples from the benchmark traces and retrained at sequence length 1024 to prevent `steps` truncation on longer protocols. DPO or ORPO on human-ranked pairs would be a further step to check whether a preference signal adds anything beyond the supervised baseline. The final adapter would be merged, quantized to GGUF Q4_K_M, and published to Ollama Hub to remove the Hugging Face handoff entirely.
 
----
-
-## Writing your own agent
-
-Create a new module (e.g. `src/biolab_agent/agent/solution.py`) and
-subclass `BaseAgent`:
-
-```python
-from biolab_agent.agent.base import BaseAgent, AgentConfig
-from biolab_agent.schemas import AgentResult
-
-class MyAgent(BaseAgent):
-    def run(self, query: str, image_ids: list[str] | None = None) -> AgentResult:
-        ...
-```
-
-Point the harness and server at your class:
-
-```bash
-export BIOLAB_AGENT_CLASS=biolab_agent.agent.solution:MyAgent
-docker compose restart app
-```
-
-The FastAPI service auto-loads the class on startup; `/ask`, the CLI
-(`biolab-bench`), and the evaluation harness all read the same env var.
-
-### Tools to implement
-
-- `segment_wells(image_id, prompt)`: segmentation backend producing `WellMasks` (cell count + confluency)
-- `retrieve_protocol(query, k)`: RAG over `data/protocols/` via Qdrant
-- `lookup_reagent(name)`: CSV lookup against `data/reagents/catalog.csv`
-- `compose_protocol(steps)`: validate and emit a structured protocol JSON
-
-The starter ships a working `BaselineAgent`
-(`src/biolab_agent/agent/baseline.py`) using prompt-driven JSON
-tool-calling, plus reference implementations of all four tools.
-
----
-
-## Reference baseline
-
-`BaselineAgent` running on:
-
-- Ollama MedGemma-4B for tool-calling
-- `facebook/sam-vit-base` mask-generation for segmentation
-- Qdrant + BGE for retrieval
-- LoRA adapter at `artifacts/lora-protocol-text/` polishing protocol-design tasks
-
-scores **11/15 passes, 0.71 overall** on the public benchmark. Failure
-modes left as headroom: T7 (PCR retrieval ranking), T10 (refusal
-phrasing), T12 (exact-name quoting), T15 (tool-order discipline). To
-swap in a stronger segmenter, replace
-`src/biolab_agent/segmentation/sam_backend.py` with an EfficientSAM3
-wrapper using weights from `Simon7108528/EfficientSAM3`.
-
-### LoRA adapter (Git LFS)
-
-The fine-tuned adapter is checked into the repo via **Git LFS** at
-`artifacts/lora-protocol-text/`. To pull the actual weights you need
-git-lfs installed before cloning (or run `git lfs pull` after).
-
-```bash
-# Ubuntu / Debian
-sudo apt-get install git-lfs
-git lfs install
-# macOS
-brew install git-lfs && git lfs install
-
-# Then either:
-git clone https://github.com/prakash-aryan/biolab-agent-base.git
-# or, if you already cloned:
-git lfs pull
-```
-
-The agent picks the adapter up automatically through the default
-`BIOLAB_LORA_ADAPTER` env var in `.env.example`. To train your own:
-
-```bash
-pip install -e '.[finetune]'
-python -m biolab_agent.finetune.train          # ~20 min on an 8 GB GPU
-# Adapter lands at artifacts/lora-protocol/. Move/symlink to
-# artifacts/lora-protocol-text/ and the agent will use it.
-```
-
----
-
-## Running the benchmark
-
-```bash
-# All 15 tasks against whatever BIOLAB_AGENT_CLASS is set.
-docker compose exec app biolab-bench
-
-# Or against a specific agent:
-docker compose exec app biolab-bench --agent-class biolab_agent.agent.solution:MyAgent
-```
-
-The report is written to `artifacts/bench_report.json` and summarized to
-stdout. Each task is scored against BBBC002 cell counts, registered
-protocol `doc_id`s, or reagent catalog entries (see `eval/metrics.py`).
-
----
-
-## Conventions
-
-- Python 3.11, strict typing encouraged.
-- Formatting and linting via `ruff` (`pyproject.toml` configures it).
-- Tests via `pytest`; use the `@pytest.mark.gpu / ollama / qdrant / slow`
-  marks to gate expensive tests.
-- LF line endings enforced in `.gitattributes`, matters for Git Bash on Windows.
-
----
-
-## License
-
-Starter code: Apache-2.0. Bundled data sources keep their own licenses:
-
-- **BBBC002** images: public domain (Broad Institute CC0)
-- **Opentrons/Protocols**: Apache-2.0
-
-See [`data/DATA_SOURCES.md`](./data/DATA_SOURCES.md) for attribution details.

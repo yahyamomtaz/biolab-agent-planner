@@ -9,7 +9,7 @@ alternative agent can replace either map with its own callables.
 """
 
 from biolab_agent.tools.compose import compose_protocol, compose_protocol_spec
-from biolab_agent.tools.rag import retrieve_protocol, retrieve_protocol_spec
+from biolab_agent.tools.rag_hybrid import retrieve_protocol, retrieve_protocol_spec
 from biolab_agent.tools.reagents import lookup_reagent, lookup_reagent_spec
 from biolab_agent.tools.segment import segment_wells, segment_wells_spec
 

@@ -140,8 +140,12 @@ def _safe_run(agent: BaseAgent, task: Task) -> tuple[AgentResult | None, str | N
         return None, f"{type(exc).__name__}: {exc}"
 
 
-def run_benchmark(queries_path: Path) -> dict[str, Any]:
+def run_benchmark(queries_path: Path, task_ids: list[str] | None = None) -> dict[str, Any]:
     tasks = load_tasks(queries_path)
+    if task_ids:
+        tasks = [t for t in tasks if t.id in task_ids]
+        if not tasks:
+            raise ValueError(f"No tasks matched: {task_ids}")
     log.info("Loaded %d tasks from %s", len(tasks), queries_path)
 
     agent = load_agent()

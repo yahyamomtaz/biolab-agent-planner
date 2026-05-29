@@ -38,22 +38,28 @@ services:
       BIOLAB_LORA_ADAPTER: ${BIOLAB_LORA_ADAPTER:-}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       HF_HOME: /artifacts/hf
+      LD_LIBRARY_PATH: /opt/conda/lib/python3.11/site-packages/nvidia/cu13/lib:/opt/conda/lib/python3.11/site-packages/nvidia/cudnn/lib:/opt/conda/lib
+      BIOLAB_AGENT_CLASS: ${BIOLAB_AGENT_CLASS:-biolab_agent.agent.optimized_agent:OptimizedAgent}
+      BIOLAB_HYBRID_RETRIEVAL: ${BIOLAB_HYBRID_RETRIEVAL:-1}
+      BIOLAB_RERANKER_MODEL: ${BIOLAB_RERANKER_MODEL:-BAAI/bge-reranker-base}
+      BIOLAB_RERANK_CANDIDATES: ${BIOLAB_RERANK_CANDIDATES:-25}
     ports:
-      - "8000:8000"   # FastAPI
-      - "7860:7860"   # Gradio UI (optional, user-exposed)
+      - "8000:8000" # FastAPI
+      - "7860:7860" # Gradio UI (optional, user-exposed)
     volumes:
       - ./data:/data:ro
       - ./artifacts:/artifacts
-      - ./src:/app/src            # mounted for iterative dev; remove for prod image
+      - ./src:/app/src # mounted for iterative dev; remove for prod image
       - ./eval:/app/eval
       - ./configs:/app/configs
+      - ./ui:/app/ui
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
               count: 1
-              capabilities: [gpu]
+              capabilities: [ gpu ]
     restart: unless-stopped
 
   ollama:
@@ -72,10 +78,10 @@ services:
           devices:
             - driver: nvidia
               count: 1
-              capabilities: [gpu]
+              capabilities: [ gpu ]
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      test: [ "CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1" ]
       interval: 15s
       timeout: 3s
       retries: 10
@@ -92,7 +98,7 @@ services:
       QDRANT__LOG_LEVEL: INFO
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:6333/ >/dev/null || exit 1"]
+      test: [ "CMD-SHELL", "curl -fsS http://localhost:6333/ >/dev/null || exit 1" ]
       interval: 15s
       timeout: 3s
       retries: 10

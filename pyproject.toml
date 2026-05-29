@@ -126,6 +126,10 @@ ignore = [
 "src/biolab_agent/segmentation/sam_backend.py" = ["PLC0415"]
 "src/biolab_agent/tools/segment.py" = ["PLC0415"]
 "ui/app.py" = ["PLC0415"]
+"src/biolab_agent/agent/planner.py" = ["PLC0415", "I001", "UP035"]  # intentional lazy VRAM-eviction imports
+"src/biolab_agent/agent/optimized_agent.py" = ["PLC0415", "I001"]   # lazy tool swap; import order intentional
+"src/biolab_agent/agent/compiler/tool_registry.py" = ["PLC0415"]    # lazy dep import on first use
+"src/biolab_agent/tools/rag_hybrid.py" = ["PLC0415"]                # lazy LLM import inside retrieval path
 
 [tool.mypy]
 python_version = "3.11"

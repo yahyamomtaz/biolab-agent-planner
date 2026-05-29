@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ProtocolDraft(BaseModel):
@@ -17,6 +17,25 @@ class ProtocolDraft(BaseModel):
     reagents: list[str] = Field(default_factory=list)
     notes: str | None = None
 
+    @field_validator("title", mode="before")
+    @classmethod
+    def title_no_placeholders(cls, v: str) -> str:
+        if "ITEM_" in v:
+            raise ValueError(
+                f"unfilled placeholder {v!r} — replace with real values from the query"
+            )
+        return v
+
+    @field_validator("labware", "pipettes", "reagents", "categories", mode="before")
+    @classmethod
+    def lists_no_placeholders(cls, v: list) -> list:
+        for item in v:
+            if isinstance(item, str) and "ITEM_" in item:
+                raise ValueError(
+                    f"unfilled placeholder {item!r} — replace with real values from the query"
+                )
+        return v
+
 
 def compose_protocol(
     title: str,
@@ -25,6 +44,7 @@ def compose_protocol(
     reagents: list[str],
     categories: list[str] | None = None,
     notes: str | None = None,
+    **_: Any,
 ) -> dict[str, Any]:
     """Validate and return the protocol as a JSON-serializable dict.
 

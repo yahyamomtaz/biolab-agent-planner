@@ -32,6 +32,10 @@ def bench(
         str | None,
         typer.Option(help="Override BIOLAB_AGENT_CLASS"),
     ] = None,
+    tasks: Annotated[
+        str | None,
+        typer.Option(help="Comma-separated task IDs to run (e.g. T4_reagent_lookup,T10_reagent_absence)"),
+    ] = None,
 ) -> None:
     """Run the benchmark harness against the configured agent."""
     from eval.harness import run_benchmark  # lazy import: harness pulls in heavy deps
@@ -48,7 +52,8 @@ def bench(
     console.print(f"  model       = {settings.biolab_llm_model}")
     console.print(f"  adapter     = {settings.biolab_lora_adapter or '<none>'}")
 
-    report_data = run_benchmark(queries_path=queries)
+    task_ids = [t.strip() for t in tasks.split(",")] if tasks else None
+    report_data = run_benchmark(queries_path=queries, task_ids=task_ids)
     report.parent.mkdir(parents=True, exist_ok=True)
     report.write_text(json.dumps(report_data, indent=2, default=str))
 
