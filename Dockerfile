@@ -37,7 +37,7 @@ COPY eval ./eval
 # the project's ">=2.4,<3" bound, so it is not reinstalled.
 ENV UV_SYSTEM_PYTHON=1 \
     UV_HTTP_TIMEOUT=600
-RUN uv pip install --system --no-cache -e .
+RUN uv pip install --system --no-cache -e ".[ui]"
 
 # Stage 2: runtime  -  same pytorch base (runtime variant), copy Python env + source.
 FROM pytorch/pytorch:${PYTORCH_TAG}-runtime AS runtime

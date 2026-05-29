@@ -75,9 +75,21 @@ compose_protocol_spec = {
             "type": "object",
             "properties": {
                 "title": {"type": "string", "description": "Short protocol name."},
-                "labware": {"type": "array", "items": {"type": "string"}},
-                "pipettes": {"type": "array", "items": {"type": "string"}},
-                "reagents": {"type": "array", "items": {"type": "string"}},
+                "labware": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Physical consumables and equipment on the deck (plates, racks, tip boxes, reservoirs, modules). Do NOT include pipette names, reagent names, or measurements.",
+                },
+                "pipettes": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Pipette model names only (e.g. 'P300 Single-Channel GEN2 on right mount').",
+                },
+                "reagents": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Chemicals and solutions used in the protocol. One item per string.",
+                },
                 "categories": {"type": "array", "items": {"type": "string"}, "default": []},
                 "notes": {"type": "string"},
             },

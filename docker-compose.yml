@@ -39,7 +39,7 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       HF_HOME: /artifacts/hf
       LD_LIBRARY_PATH: /opt/conda/lib/python3.11/site-packages/nvidia/cu13/lib:/opt/conda/lib/python3.11/site-packages/nvidia/cudnn/lib:/opt/conda/lib
-      BIOLAB_AGENT_CLASS: ${BIOLAB_AGENT_CLASS:-biolab_agent.agent.optimized_agent:OptimizedAgent}
+      BIOLAB_AGENT_CLASS: ${BIOLAB_AGENT_CLASS:-biolab_agent.agent.planner:PlannerAgent}
       BIOLAB_HYBRID_RETRIEVAL: ${BIOLAB_HYBRID_RETRIEVAL:-1}
       BIOLAB_RERANKER_MODEL: ${BIOLAB_RERANKER_MODEL:-BAAI/bge-reranker-base}
       BIOLAB_RERANK_CANDIDATES: ${BIOLAB_RERANK_CANDIDATES:-25}

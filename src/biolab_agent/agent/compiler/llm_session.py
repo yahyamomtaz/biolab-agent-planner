@@ -1,8 +1,10 @@
-"""LLMSession
+"""LLMSession — one place for the call-LLM-then-parse-JSON retry loop.
 
 Both the Planner and the LLM-backed Renderers do the same dance: call the
 chat model with a system prompt, parse the JSON reply, validate it against a
-Pydantic schema, and on failure reprompt with the validation error.
+Pydantic schema, and on failure reprompt with the validation error. Centralising
+that here means schema-constrained decoding (Ollama ``format=<schema>``) is
+applied uniformly and the retry policy is testable in one spot.
 """
 
 from __future__ import annotations
@@ -20,21 +22,32 @@ log = get_logger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
 
-_JSON_PATTERNS = (
-    re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL),
-    re.compile(r"(\{.*\})", re.DOTALL),
-)
+# Accept the model wrapping its JSON in ```json fences or prose prefixes.
+# Kept as a fallback even when format="json" is set, because some models still
+# slip code fences past the format constraint.
+_FENCE_PATTERN = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
+_DECODER = json.JSONDecoder()
 
 
 def _extract_json(raw: str) -> dict[str, Any] | None:
     if not raw:
         return None
-    for pat in _JSON_PATTERNS:
-        m = pat.search(raw)
-        if not m:
-            continue
+    # Try code-fenced JSON first (non-greedy, so fences delimit correctly).
+    m = _FENCE_PATTERN.search(raw)
+    if m:
         try:
             return json.loads(m.group(1))
+        except json.JSONDecodeError:
+            pass
+    # Walk to each `{` and attempt a proper parse that stops at the end of
+    # the first valid JSON object, ignoring any trailing text or extra `}`.
+    for i, ch in enumerate(raw):
+        if ch != "{":
+            continue
+        try:
+            obj, _ = _DECODER.raw_decode(raw, i)
+            if isinstance(obj, dict):
+                return obj
         except json.JSONDecodeError:
             continue
     return None
@@ -89,6 +102,8 @@ class LLMSession:
             "num_predict": self._num_predict,
             "top_p": self._top_p,
         }
+        # Ollama's `format=<json schema>` constrains generation to the schema.
+        # Falls back to free JSON if the backend doesn't recognise the kwarg.
         if constrained_decoding:
             options["format"] = schema.model_json_schema()
 
@@ -141,7 +156,8 @@ class LLMSession:
                     },
                 )
         # All attempts exhausted — log enough to diagnose without dumping
-        # the full transcript every time.
+        # the full transcript every time. Truncate the raw reply to keep the
+        # log readable when the model returns a long block.
         log.warning(
             "llm_session.exhausted_attempts",
             schema=schema_name,

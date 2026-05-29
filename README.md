@@ -12,7 +12,7 @@ This repository is a development of [prakash-aryan/biolab-agent-base](biolab-age
 ## What have been changed:
 
 
-The baseline fails 5 queries that each point to a different layer of the stack. Following modifications added to the repository:
+The baseline fails 4 queries that each point to a different layer of the stack. Following modifications added to the repository:
 
 - **New Agent:** `PlannerAgent` — five-component LLMCompiler (Planner → TaskFetcher → Executor → Joiner → Renderer) replacing the baseline's 10-turn agent. System prompt split into nested single-responsibility prompts with schema-constrained decoding per component.
 
@@ -24,7 +24,7 @@ A **Data cleaning** (`_clean_doc_text()`) added to remove noisy Markdown `Links`
 
 - **Gradio UI:** Side-by-side comparison tab running `BaselineAgent` and `PlannerAgent` in parallel on the same query.
 
-- **Tasks Fixed:** T7 - T10 - T12 - T13 - T15
+- **Tasks Fixed:** T7 - T10 - T12 - T15
 
 ## Implementations:
 
@@ -151,7 +151,6 @@ On the Baseline agent 5 queries have been faild:
 - T7 (PCR retrieval): Wrong protocol ranked first
 - T10 (ethanol refusal): Phrasing missed the substring check
 - T12 (PBS quote): Didn't quote the catalog entry verbatim
-- T13 (dna_prep_design): structured output failed  
 - T15 (retrieve-then-compose): Agent skipped the second tool
 
 On the Planner agent no queries have been failed, T9 got a better result (+0.14).
@@ -170,10 +169,10 @@ On the Planner agent no queries have been failed, T9 got a better result (+0.14)
 | T10_reagent_absence | answer_contains | 0.00 | **1.00** | +1.00 | ❌ | ✅ |
 | T11_composite_row_D | composite | 0.76 | 0.76 | — | ✅ | ✅ |
 | T12_lookup_PBS | answer_contains | 0.00 | **1.00** | +1.00 | ❌ | ✅ |
-| T13_dna_prep_design | structured_protocol | 0.00 | **1.00** | +1.00 | ❌ | ✅ |
+| T13_dna_prep_design | structured_protocol | 1.00 | **1.00** | - | ✅ | ✅ |
 | T14_single_well | cell_count | 1.00 | 1.00 | — | ✅ | ✅ |
 | T15_retrieve_then_compose | tool_order | 0.50 | **1.00** | +0.50 | ❌ | ✅ |
-| **Overall** | | **0.68** | **0.92** | **+0.24** | **10/15** | **15/15** |
+| **Overall** | | **0.71** | **0.92** | **+0.21** | **11/15** | **15/15** |
 
 Source reports: `artifacts/bench_report.json`
 
