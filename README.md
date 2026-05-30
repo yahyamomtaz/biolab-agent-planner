@@ -310,7 +310,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\setup.ps1   # Windows
 
 ## Further improvements
 
-**Segmentation.** T1 (0.80) and T6 (0.60) are the largest remaining gaps. `facebook/sam-vit-base` over-counts on dense-cell wells where nuclei overlap; replacing it with [EfficientSAM3](https://github.com/SimonZeng7108/efficientsam3) or SAM2 — both tuned for instance-level separation — is a drop-in swap in `src/biolab_agent/segmentation/sam_backend.py` and the most impactful next step.
+**Segmentation.** is the largest remaining gap. Replacing `facebook/sam-vit-base` with [EfficientSAM3](https://github.com/SimonZeng7108/efficientsam3) or SAM2 will improve the cell-count result.
 
 **Fine-tuning.** The current LoRA was trained on 500 protocol-design pairs only, so it has never seen tool-calling turns. Given more time, the dataset would be expanded with ~200 tool-call examples from the benchmark traces and retrained at sequence length 1024 to prevent `steps` truncation on longer protocols. DPO or ORPO on human-ranked pairs would be a further step to check whether a preference signal adds anything beyond the supervised baseline. The final adapter would be merged, quantized to GGUF Q4_K_M, and published to Ollama Hub to remove the Hugging Face handoff entirely.
 
