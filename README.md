@@ -1,7 +1,7 @@
-# biolab-agent
+# biolab-agent-planner
 
 This repository is a development of [prakash-aryan/biolab-agent-base](biolab-agent-base). 
-**Final score: 15/15 passes · 0.92 overall** (baseline: 10/15 · 0.68)
+**Final score: 15/15 passes · 0.91 overall** (baseline: 11/15 · 0.71)
 
 #### A video of running both agent via gradio is available here:
 
@@ -172,7 +172,7 @@ On the Planner agent no queries have been failed, T9 got a better result (+0.14)
 | T13_dna_prep_design | structured_protocol | 1.00 | **1.00** | - | ✅ | ✅ |
 | T14_single_well | cell_count | 1.00 | 1.00 | — | ✅ | ✅ |
 | T15_retrieve_then_compose | tool_order | 0.50 | **1.00** | +0.50 | ❌ | ✅ |
-| **Overall** | | **0.71** | **0.92** | **+0.21** | **11/15** | **15/15** |
+| **Overall** | | **0.71** | **0.91** | **+0.20** | **11/15** | **15/15** |
 
 Source reports: `artifacts/bench_report.json`
 
